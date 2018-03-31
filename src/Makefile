@@ -366,16 +366,6 @@ endif
 ${info Building for '${OSTYPE}' '${OSVERSION}' as '${MACHINETYPE}'}
 #${info Using LD_RUN_PATH '${LD_RUN_PATH}'}
 
-ifeq ($(BUILDDEBUG), 1)
-	CXXFLAGS = -D_GLIBCXX_PARALLEL -pthread -O0 -Wall -g -fopenmp
-	CFLAGS = -D_GLIBCXX_PARALLEL -pthread -O0 -Wall -g -fopenmp
-else
-	CXXFLAGS = -D_GLIBCXX_PARALLEL -pthread -O3 -Wall
-	CFLAGS = -D_GLIBCXX_PARALLEL -pthread -O3 -Wall
-endif
-
-LDFLAGS = -pthread -lm -fopenmp
-
 
 # Include the main user-supplied submakefile. This also recursively includes
 # all other user-supplied submakefiles.
