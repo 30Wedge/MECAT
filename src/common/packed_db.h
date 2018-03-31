@@ -36,7 +36,7 @@ public:
 		{
 			for (index_t i = 0; i < size; ++i)
 			{
-				uint1 c = get_char(offset + i);
+				u1_t c = get_char(offset + i);
 				seq[idx++] = c;
 			}
 		}
@@ -44,7 +44,7 @@ public:
 		{
 			for (index_t i = size - 1; i >= 0; --i)
 			{
-				uint1 c = get_char(offset + i);
+				u1_t c = get_char(offset + i);
 				c = 3 - c;
 				seq[idx++] = c;
 			}

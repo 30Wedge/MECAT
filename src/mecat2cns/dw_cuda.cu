@@ -144,7 +144,7 @@ DPathData2* GetDPathIdx(const int d, const int k, const unsigned int max_idx, DP
 }
 
 //proof of concept 
-__global__ foo()
+__global__ void foo()
 {
 }
 

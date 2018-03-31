@@ -5,6 +5,7 @@ ifeq "$(strip ${TARGET_DIR})" ""
   TARGET_DIR   := ../$(OSTYPE)-$(MACHINETYPE)/bin
 endif
 
+NVCC    := nvcc 
 TARGET   := mecat2cns_gpu 
 TGT_LINKER := nvcc 
 
@@ -12,7 +13,7 @@ SRC_CXXFLAGS := -pthread -D_GLIBCXX_PARALLEL -fopenmp
 
 SOURCES  := main.cpp \
 	argument.cpp \
-	dw.cu \
+	dw_cuda.cu \
 	MECAT_AlnGraphBoost.C \
 	mecat_correction.cpp \
 	options.cpp \
