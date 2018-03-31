@@ -137,6 +137,20 @@ define COMPILE_CXX_CMDS
 	 rm -f ${@:%$(suffix $@)=%.d}
 endef
 
+# COMPILE_CUDA_CMDS - Commands for compiling CUDA source code.
+define COMPILE_CUDA_CMDS
+    @mkdir -p $(dir $@)
+        $(strip ${NVCC} -o $(basename $@).d -M ${CUDAFLAGS} ${SRC_CUDAFLAGS} ${INCDIRS} \
+            ${SRC_INCDIRS} ${SRC_DEFS} ${DEFS} $<)    
+        $(strip ${NVCC} -o $@ -c ${CUDAFLAGS} ${SRC_CUDAFLAGS} ${INCDIRS} \
+            ${SRC_INCDIRS} ${SRC_DEFS} ${DEFS} $<)
+        @cp ${@:%$(suffix $@)=%.d} ${@:%$(suffix $@)=%.P}; \
+             sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+                 -e '/^$$/ d' -e 's/$$/ :/' < ${@:%$(suffix $@)=%.d} \
+                 >> ${@:%$(suffix $@)=%.P}; \
+        rm -f ${@:%$(suffix $@)=%.d}
+endef
+
 # INCLUDE_SUBMAKEFILE - Parameterized "function" that includes a new
 #   "submakefile" fragment into the overall Makefile. It also recursively
 #   includes all submakefiles of the specified submakefile fragment.
@@ -149,6 +163,7 @@ define INCLUDE_SUBMAKEFILE
     TARGET        :=
     TGT_CFLAGS    :=
     TGT_CXXFLAGS  :=
+    TGT_CUDAFLAGS := 
     TGT_DEFS      :=
     TGT_INCDIRS   :=
     TGT_LDFLAGS   :=
@@ -161,6 +176,7 @@ define INCLUDE_SUBMAKEFILE
     SOURCES       :=
     SRC_CFLAGS    :=
     SRC_CXXFLAGS  :=
+    SRC_CUDAFLAGS := 
     SRC_DEFS      :=
     SRC_INCDIRS   :=
 
@@ -187,6 +203,7 @@ define INCLUDE_SUBMAKEFILE
         ALL_TGTS += $${TGT}
         $${TGT}_CFLAGS    := $${TGT_CFLAGS}
         $${TGT}_CXXFLAGS  := $${TGT_CXXFLAGS}
+        $${TGT}_CUDAFLAGS := $${TGT_CUDAFLAGS}
         $${TGT}_DEFS      := $${TGT_DEFS}
         $${TGT}_DEPS      :=
         TGT_INCDIRS       := $$(call QUALIFY_PATH,$${DIR},$${TGT_INCDIRS})
@@ -206,6 +223,7 @@ define INCLUDE_SUBMAKEFILE
         TGT := $$(strip $$(call PEEK,$${TGT_STACK}))
         $${TGT}_CFLAGS    += $${TGT_CFLAGS}
         $${TGT}_CXXFLAGS  += $${TGT_CXXFLAGS}
+        $${TGT}_CUDAFLAGS += $${TGT_CUDAFLAGS}
         $${TGT}_DEFS      += $${TGT_DEFS}
         TGT_INCDIRS       := $$(call QUALIFY_PATH,$${DIR},$${TGT_INCDIRS})
         TGT_INCDIRS       := $$(call CANONICAL_PATH,$${TGT_INCDIRS})
@@ -249,6 +267,7 @@ define INCLUDE_SUBMAKEFILE
         $${TGT}_DEPS += $${OBJS:%.o=%.P}
         $${OBJS}: SRC_CFLAGS   := $${$${TGT}_CFLAGS} $${SRC_CFLAGS}
         $${OBJS}: SRC_CXXFLAGS := $${$${TGT}_CXXFLAGS} $${SRC_CXXFLAGS}
+        $${OBJS}: SRC_CUDAFLAGS := $${$${TGT}_CUDAFLAGS} $${SRC_CUDAFLAGS}
         $${OBJS}: SRC_DEFS     := $$(addprefix -D,$${$${TGT}_DEFS} $${SRC_DEFS})
         $${OBJS}: SRC_INCDIRS  := $$(addprefix -I,\
                                      $${$${TGT}_INCDIRS} $${SRC_INCDIRS})
@@ -328,8 +347,9 @@ endif
 # Define the source file extensions that we know how to handle.
 C_SRC_EXTS := %.c
 CXX_SRC_EXTS := %.C %.cc %.cp %.cpp %.CPP %.cxx %.c++
+CUDA_SRC_EXTS := %.cu 
 JAVA_EXTS    := %.jar %.tar
-ALL_SRC_EXTS := ${C_SRC_EXTS} ${CXX_SRC_EXTS} ${JAVA_EXTS}
+ALL_SRC_EXTS := ${C_SRC_EXTS} ${CXX_SRC_EXTS} ${JAVA_EXTS} ${CUDA_SRC_EXTS} 
 
 # Initialize global variables.
 ALL_TGTS :=
@@ -337,6 +357,10 @@ DEFS :=
 DIR_STACK :=
 INCDIRS :=
 TGT_STACK :=
+
+# Define an implicit rule to make CUDA files
+%.o : %.cu
+	$(NVCC) -c $(CUDAFLAGS) $< -o $@ 
 
 # (BPW) Discover our OS and architecture.  These are used to set the BUILD_DIR and TARGET_DIR to
 # something more useful than 'build' and '.'.
@@ -396,6 +420,12 @@ $(foreach TGT,${ALL_TGTS},\
   $(foreach EXT,${CXX_SRC_EXTS},\
     $(eval $(call ADD_OBJECT_RULE,${BUILD_DIR}/$(call CANONICAL_PATH,${TGT}),\
              ${EXT},$${COMPILE_CXX_CMDS}))))
+
+# Add pattern rule(s) for creating compiled object code from CUDA sources. 
+$(foreach TGT,${ALL_TGTS},\
+  $(foreach EXT,${CUDA_SRC_EXTS},\
+    $(eval $(call ADD_OBJECT_RULE,${BUILD_DIR}/$(call CANONICAL_PATH,${TGT}),\
+             ${EXT},$${COMPILE_CUDA_CMDS}))))
 
 # Add "clean" rules to remove all build-generated files.
 .PHONY: clean
