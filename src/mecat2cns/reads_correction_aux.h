@@ -11,9 +11,9 @@
 struct CnsTableItem
 {
 	char base;
-	uint1 mat_cnt;
-	uint1 ins_cnt;
-	uint1 del_cnt;
+	u1_t mat_cnt;
+	u1_t  ins_cnt;
+	u1_t del_cnt;
 	
 	CnsTableItem() : base('N'), mat_cnt(0), ins_cnt(0), del_cnt(0) {}
 };
@@ -127,7 +127,7 @@ struct ConsensusThreadData
 	std::string qaln;
 	std::string saln;
 	CnsTableItem* cns_table;
-	uint1* id_list;
+	u1_t* id_list;
 	std::ostream* out;
 	pthread_mutex_t out_lock;
 	
@@ -148,7 +148,7 @@ struct ConsensusThreadData
 		qaln.reserve(MAX_SEQ_SIZE);
 		saln.reserve(MAX_SEQ_SIZE);
 		safe_malloc(cns_table, CnsTableItem, MAX_SEQ_SIZE);
-		safe_malloc(id_list, uint1, MAX_SEQ_SIZE);
+		safe_malloc(id_list, u1_t, MAX_SEQ_SIZE);
 		pthread_mutex_init(&out_lock, NULL);
 	}
 	

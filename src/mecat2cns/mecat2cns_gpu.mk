@@ -5,12 +5,15 @@ ifeq "$(strip ${TARGET_DIR})" ""
   TARGET_DIR   := ../$(OSTYPE)-$(MACHINETYPE)/bin
 endif
 
-TARGET       := mecat2cns
-SRC_CXXFLAGS := -D_GLIBCXX_PARALLEL -pthread -fopenmp
+NVCC    := nvcc 
+TARGET   := mecat2cns_gpu 
+TGT_LINKER := nvcc 
 
-SOURCES      := main.cpp \
+SRC_CXXFLAGS := -pthread -D_GLIBCXX_PARALLEL -fopenmp
+
+SOURCES  := main.cpp \
 	argument.cpp \
-	dw.cpp \
+	dw_cuda.cu \
 	MECAT_AlnGraphBoost.C \
 	mecat_correction.cpp \
 	options.cpp \
@@ -21,7 +24,7 @@ SOURCES      := main.cpp \
 
 SRC_INCDIRS  := . libboost
 
-TGT_LDFLAGS := -L${TARGET_DIR} -pthread -lm -fopenmp 
+TGT_LDFLAGS := -L${TARGET_DIR} -Xcompiler="-pthread" -lm -Xcompiler="-fopenmp"
 TGT_LDLIBS  := -lmecat
 TGT_PREREQS := libmecat.a
 

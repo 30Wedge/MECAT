@@ -6,6 +6,7 @@ ifeq "$(strip ${TARGET_DIR})" ""
 endif
 
 TARGET       := libmecat.a
+SRC_CXXFLAGS := -pthread -fopenmp -D_GLIBCXX_PARALLEL 
 
 SOURCES      := common/alignment.cpp \
 		common/buffer_line_iterator.cpp \
@@ -24,4 +25,5 @@ SRC_INCDIRS  := common \
 SUBMAKEFILES := mecat2pw/pw.mk \
 		mecat2ref/mecat2ref.mk \
 		mecat2cns/mecat2cns.mk \
+		mecat2cns/mecat2cns_gpu.mk \
 		filter_reads/filter_reads.mk

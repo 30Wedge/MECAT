@@ -10,7 +10,7 @@ SOURCES  := mecat2ref.cpp mecat2ref_impl_large.cpp output.cpp mecat2ref_aux.cpp
 
 SRC_INCDIRS  := . 
 
-TGT_LDFLAGS := -L${TARGET_DIR}
+TGT_LDFLAGS := -L${TARGET_DIR} -pthread -fopenmp 
 TGT_LDLIBS  := -lmecat
 TGT_PREREQS := libmecat.a
 

@@ -11,10 +11,10 @@ namespace ns_meap_cns {
 #define FINS 4
 #define UNDS 8
 
-inline uint1
+inline u1_t
 identify_one_consensus_item(CnsTableItem& cns_item, const int min_cov)
 {
-	uint1 ident = 0;
+	u1_t ident = 0;
 	int cov = cns_item.mat_cnt + cns_item.ins_cnt;
 	if (cns_item.mat_cnt >= cov * 0.8) ident |= FMAT;
 	if (cns_item.ins_cnt >= cov * 0.8) ident |= FINS;
@@ -79,7 +79,7 @@ meap_cns_one_indel(const int sb, const int se, CnsAlns& cns_vec,
 
 void
 meap_consensus_one_segment(CnsTableItem* cns_list, const int cns_list_size, 
-						   uint1* cns_id_vec,
+						   u1_t* cns_id_vec,
 						   int start_soff, CnsAlns& cns_vec, 
 						   std::string& aux_qstr, std::string& aux_tstr,
 						   std::string& target, const int min_cov)
@@ -201,7 +201,7 @@ check_ovlp_mapping_range(const int qb, const int qe, const int qs,
 
 void
 consensus_worker(CnsTableItem* cns_table,
-				 uint1* id_list,
+				 u1_t* id_list,
 				 CnsAlns& cns_vec,
 				 std::string& aux_qstr,
 				 std::string& aux_tstr,
