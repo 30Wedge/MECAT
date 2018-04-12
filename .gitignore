@@ -46,5 +46,10 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
-# Test results
+# Test artifcats
 test/test_results*
+test/work
+test/diff_work
+test/diff_report
+test/*.fasta
+test/*.short
