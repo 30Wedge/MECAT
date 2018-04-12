@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Runs MECAT: mecat2cns multiple times to compare gpu and cpu output
+# compare mecat2cns and mecat2cns_gpu outpt. Fails if they differ
 #
 # $1 - path to fasta input
 
@@ -38,9 +38,10 @@ mecat2cns_gpu -i 0 -t 1 -x 1 $candidate $fasta_in $fasta_mid.gpu
 diff $fasta_mid.cpu $fasta_mid.gpu > diff_report
 
 if [ $? -eq 1 ]; then
-    echo "GPU and CPU outputs differ. Check diff_report for details."
+    echo "GPU and CPU outputs differ. Check diff_report and diff_work for details."
     exit 1
 else
     rm diff_report
+    rm -rf $work
     exit 0
 fi
