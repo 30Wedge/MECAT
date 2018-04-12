@@ -1,31 +1,31 @@
 #!/bin/bash
 
-# Runs MECAT: mecat2cns on test data 
+# Runs MECAT: mecat2cns on test data
 #
-# $1 - path to fasta input 
+# $1 - path to fasta input
 #
-# Compares gpu version performance with cpu version 
+# Compares gpu version performance with cpu version
 
-#Assumes you're on the alienware server... 
-# TODO - generalize 
+#Assumes you're on the alienware server...
+# TODO - generalize
 mecat_bin=../Linux-amd64/bin
 
 work="./work"
-mkdir -p $work 
+mkdir -p $work
 
-#Check input 
+#Check input
 if [ "$#" -ne 1 ]; then
-    echo "Usage: ./testMecat.sh input.fasta"  
+    echo "Usage: ./testMecat.sh input.fasta"
     exit 1
-fi 
+fi
 
-if [ ! -f $1 ]; then 
+if [ ! -f $1 ]; then
     echo "File: $1 does not exist"
     exit 1
 fi
 fasta_in=$1 #./MAP006-PCR-1_2D_pass.fasta
 
-#local variables 
+#local variables
 candidate="./$work/candidate.txt"
 fasta_mid="./$work/corrected_ecoli.fasta"
 fasta_ext="./$work/corrected_ecolix25"
@@ -47,7 +47,7 @@ mecat2cns_gpu -i 0 -t 1 -x 1 $candidate $fasta_in $fasta_mid.gpu
 gpu_p=$(date +%s)
 
 
-#report results 
+#report results
 let gpu_time=( $gpu_p - $gpu_s )
 let cpu_time=( $cpu_p - $cpu_s )
 
@@ -59,7 +59,7 @@ echo "GPU size: $(ls -sh $fasta_mid".gpu")" | tee -a $results
 echo "CPU size: $(ls -sh $fasta_mid".cpu")" | tee -a $results
 
 #delete run artifacts
-rm -rf $work 
+rm -rf $work
 
 
 #Ignore other steps for now... compare file sizes of output until a better output validation metric is needed
