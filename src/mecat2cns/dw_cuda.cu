@@ -61,15 +61,15 @@ DiffRunningData::~DiffRunningData()
 	safe_free(aln_path);
 }
 
-void fill_m4record_from_output_store(const OutputStore& result, 
-									 const idx_t qid, 
+void fill_m4record_from_output_store(const OutputStore& result,
+									 const idx_t qid,
 									 const idx_t sid,
 									 const char qstrand,
 									 const char sstrand,
 									 const idx_t qsize,
 									 const idx_t ssize,
-									 const idx_t q_off_in_aln, 
-									 const idx_t s_off_in_aln, 
+									 const idx_t q_off_in_aln,
+									 const idx_t s_off_in_aln,
 									 const idx_t q_ext,
 									 const idx_t s_ext,
 									 M4Record& m4)
@@ -88,7 +88,7 @@ void fill_m4record_from_output_store(const OutputStore& result,
 	m4ssize(m4) = ssize;
 	m4qext(m4) = q_ext;
 	m4sext(m4) = s_ext;
-	
+
 	if (m4qdir(m4) == 1)
 	{
 		m4qoff(m4) = qsize - (q_off_in_aln + result.query_end);
@@ -143,14 +143,14 @@ DPathData2* GetDPathIdx(const int d, const int k, const unsigned int max_idx, DP
     return ret;
 }
 
-//proof of concept 
+//proof of concept
 __global__ void foo()
 {
 }
 
-int Align(const char* query, const int q_len, const char* target, const int t_len, 
-          const int band_tolerance, const int get_aln_str, Alignment* align, 
-		  int* V, int* U, DPathData2* d_path, PathPoint* aln_path, 
+int Align(const char* query, const int q_len, const char* target, const int t_len,
+          const int band_tolerance, const int get_aln_str, Alignment* align,
+		  int* V, int* U, DPathData2* d_path, PathPoint* aln_path,
 		  const int right_extend, double error_rate)
 {
     int k_offset;
@@ -159,12 +159,12 @@ int Align(const char* query, const int q_len, const char* target, const int t_le
     int best_m;
     int min_k, new_min_k, max_k, new_max_k, pre_k;
     int x, y;
-    int ck, cd, cx, cy, nx, ny; 
+    int ck, cd, cx, cy, nx, ny;
     int max_d, band_size;
     unsigned long d_path_idx = 0, max_idx = 0;
     int aln_path_idx, aln_pos, i, aligned = 0;
     DPathData2* d_path_aux;
-    
+
     max_d = (int)(2.0 * error_rate * (q_len + t_len));
     k_offset = max_d;
     band_size = band_tolerance * 2;
@@ -174,8 +174,8 @@ int Align(const char* query, const int q_len, const char* target, const int t_le
     max_k = 0;
     d_path_idx = 0;
     max_idx = 0;
-    
-    foo<<<256, 256>>>(); 
+
+    foo<<<256, 256>>>();
     for (d = 0; d < max_d; ++d)
     {
         if (max_k - min_k > band_size) break;
@@ -184,14 +184,14 @@ int Align(const char* query, const int q_len, const char* target, const int t_le
         {
             if( k == min_k || (k != max_k && V[k - 1 + k_offset] < V[k + 1 + k_offset]) )
             { pre_k = k + 1; x = V[k + 1 + k_offset]; }
-            else 
+            else
             { pre_k = k - 1; x = V[k - 1 + k_offset] + 1; }
             y = x - k;
             d_path[d_path_idx].d = d;
             d_path[d_path_idx].k = k;
             d_path[d_path_idx].x1 = x;
             d_path[d_path_idx].y1 = y;
-			
+
 			if (right_extend)
 				while( x < q_len && y < t_len && query[x] == target[y]) { ++x; ++y; }
 			else
@@ -311,7 +311,7 @@ int Align(const char* query, const int q_len, const char* target, const int t_le
 }
 
 void dw_in_one_direction(const char* query, const int query_size, const char* target, const int target_size,
-						 int* U, int* V, Alignment* align, DPathData2* d_path, PathPoint* aln_path, 
+						 int* U, int* V, Alignment* align, DPathData2* d_path, PathPoint* aln_path,
 						 SW_Parameters* swp, OutputStore* result, const int right_extend, double error_rate)
 {
 	const idx_t ALN_SIZE = swp->segment_size;
@@ -381,9 +381,170 @@ void dw_in_one_direction(const char* query, const int query_size, const char* ta
     }
 }
 
+/*dw-CUDA functions */
+__global__
+void dw_left_merge(OutputStore* result, int* idx, int query_start, int target_start)
+{
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+
+    int i;
+    int j;
+    int k;
+    int idx_m = tid;
+    unsigned char ch;
+
+    for(k = result->left_store_size - 1 + tid, i = 0, j = 0; k >= 0; k -= stride, idx_m += stride)
+    {
+        ch = result->left_store1[k];
+        //assert 0 <= ch <=4
+        //ch = encode2char[ch];
+        result->out_store1[idx_m] = ch;
+        if (ch != '-') ++i; //do this like a GPU
+
+        ch = result->left_store2[k];
+        //assert 0 <= ch <=4
+        //ch = encode2char[ch];
+        result->out_store2[idx_m] = ch;
+        if( ch != '-') ++j;//do this like gpu
+    }
+
+    //reduce i and j here
+
+    //output once
+    if(threadIdx.x == 0 && blockIdx.x ==0)
+    {
+        result->query_start =  query_start - i;
+        result->target_start = target_start - j;
+    }
+
+    //idx is persistent
+    //put the highest value of idx_m into idx
+}
+
+__global__
+void dw_right_merge(OutputStore* result, int* idx, int query_start, int target_start)
+{
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+
+    int i;
+    int j;
+    int k;
+    int idx_m = *idx + tid;
+    unsigned char ch;
+
+    int ub = result->right_store_size; //upper bound
+    for(k = 0, i = 0, j = 0; k < ub; k += stride, idx_m += stride)
+    {
+        ch = result->right_store1[k];
+        //assert 0 <= ch <=4
+        //ch = encode2char[ch];
+        result->out_store1[idx_m] = ch;
+        if (ch != '-') ++i; //do this like a GPU
+
+        ch = result->right_store2[k];
+        //assert 0 <= ch <=4
+        //ch = encode2char[ch];
+        result->out_store2[idx_m] = ch;
+        if( ch != '-') ++j;//do this like gpu
+    }
+
+    //reduce i and j here
+
+    //output once
+    if(threadIdx.x == 0 && blockIdx.x ==0)
+    {
+        result->query_start =  query_start + i;
+        result->target_start = target_start + j;
+    }
+    //idx is persistent
+    //todo put the highest value of idx_m into idx
+}
+
+__global__
+void dw_pattern_build(OutputStore* result, int out_store_size)
+{
+
+    //divide block team into 4 groups
+    //each group looks for a different type of thing
+    __shared__ int cnt; //count of the thing that htis block group is tracking
+
+    int blockTeam = blockIdx.x % 4;
+    int tid = threadIdx.x + blockIdx.x * blockDim.x/4;
+    int stride = gridDim.x * blockDim.x/4;
+
+    if( blockTeam == 0 ) //match
+    {
+        for(int j = tid; j < out_store_size; j += stride)
+        {
+            if(result->out_store1[j] == result->out_store2[j])
+            {
+                ++cnt; //does this need to be atomically protected?
+                result->out_match_pattern[j] = '|';
+            }
+
+        }
+    }
+    else if( blockTeam == 1 ) //insert
+    {
+        //might need to check if its not a match
+        for(int j = tid; j < out_store_size; j += stride)
+        {
+            if(result->out_store1[j] == '-')
+            {
+                ++cnt; //does this need to be atomically protected?
+                result->out_match_pattern[j] = '*';
+            }
+
+        }
+    }
+    else if( blockTeam == 2 ) //delete
+    {
+        //might need to check if its not a match
+        for(int j = tid; j < out_store_size; j += stride)
+        {
+            if(result->out_store2[j] == '-')
+            {
+                ++cnt; //does this need to be atomically protected?
+                result->out_match_pattern[j] = '*';
+            }
+
+        }
+    }
+    else //mismatch
+    {
+        for(int j = tid; j < out_store_size; j += stride)
+        {
+            if(result->out_store1[j] != result->out_store2[j] &&
+                result->out_store1[j] != '-' &&
+                result->out_store2[j] != '-')
+            {
+                ++cnt; //does this need to be atomically protected?
+                result->out_match_pattern[j] = '*';
+            }
+
+        }
+    }
+
+    //reduce cnt into mis/mat/ins/del based on block group
+    int mis_f, mat_f, ins_f, del_f;
+
+    if(threadIdx.x == 0 and blockIdx.x == 0)
+    {
+        result->mat = mat_f;
+        result->mis = mis_f;
+        result->ins = ins_f;
+        result->del = del_f;
+        result->ident = 100.0 * mat_f / out_store_size;
+    }
+
+    //result structure is the output
+}
+
 int  dw(const char* query, const int query_size, const int query_start,
         const char* target, const int target_size, const int target_start,
-        int* U, int* V, Alignment* align, DPathData2* d_path, 
+        int* U, int* V, Alignment* align, DPathData2* d_path,
         PathPoint* aln_path, OutputStore* result, SW_Parameters* swp,
 	    double error_rate, const int min_aln_size)
 {
@@ -392,13 +553,13 @@ int  dw(const char* query, const int query_size, const int query_start,
     // left extend
     dw_in_one_direction(query + query_start - 1, query_start,
 						target + target_start - 1, target_start,
-						U, V, align, d_path, aln_path, swp, result, 
+						U, V, align, d_path, aln_path, swp, result,
 						0, error_rate);
     align->init();
     // right extend
     dw_in_one_direction(query + query_start, query_size - query_start,
 						target + target_start, target_size - target_start,
-						U, V, align, d_path, aln_path, swp, result, 
+						U, V, align, d_path, aln_path, swp, result,
 						1, error_rate);
 
     // merge the results
@@ -411,7 +572,7 @@ int  dw(const char* query, const int query_size, const int query_start,
 		ch = encode2char[ch];
 		result->out_store1[idx] = ch;
 		if (ch != '-') ++i;
-		
+
 		ch = result->left_store2[k];
 		r_assert(ch >= 0 && ch <= 4);
 		ch = encode2char[ch];
@@ -434,7 +595,7 @@ int  dw(const char* query, const int query_size, const int query_start,
 		ch = encode2char[ch];
 		result->out_store1[idx] = ch;
 		if (ch != '-') ++i;
-		
+
 		ch = result->right_store2[k];
 		r_assert(ch >= 0 && ch <= 4);
 		ch = encode2char[ch];
@@ -492,12 +653,12 @@ bool GetAlignment(const char* query, const int query_start, const int query_size
 {
 	int flag = dw(query, query_size, query_start,
 				  target, target_size, target_start,
-				  drd->DynQ, drd->DynT, 
+				  drd->DynQ, drd->DynT,
 				  drd->align, drd->d_path,
 				  drd->aln_path, drd->result,
 				  &drd->swp, error_rate, min_aln_size);
 	if (!flag) return false;
-	
+
 	int qrb = 0, qre = 0;
 	int trb = 0, tre = 0;
 	int eit = 0, k = 0;
@@ -520,7 +681,7 @@ bool GetAlignment(const char* query, const int query_start, const int query_size
 	{
 		std::cout << qrb << "\t" << trb << "\t" << eit << "\t" << k << "\n";
 	}
-	
+
 	for (k = drd->result->out_store_size - 1, eit = 0; k >= 0 && eit < consecutive_match_region_size; --k)
 	{
 		const char qc = drd->result->out_store1[k];
@@ -535,7 +696,7 @@ bool GetAlignment(const char* query, const int query_start, const int query_size
 	qre -= consecutive_match_region_size;
 	tre -= consecutive_match_region_size;
 	const int end_aln_id = k + 1;
-	
+
 	m5qsize(m5) = query_size;
 	m5qoff(m5) = drd->result->query_start + qrb;
 	m5qend(m5) = drd->result->query_end - qre;
@@ -554,7 +715,7 @@ bool GetAlignment(const char* query, const int query_start, const int query_size
 	m5qaln(m5)[aln_size] = '\0';
 	m5saln(m5)[aln_size] = '\0';
 	m5pat(m5)[aln_size] = '\0';
-	
+
 	return true;
 }
 
