@@ -143,10 +143,6 @@ DPathData2* GetDPathIdx(const int d, const int k, const unsigned int max_idx, DP
     return ret;
 }
 
-//proof of concept
-__global__ void foo()
-{
-}
 
 int Align(const char* query, const int q_len, const char* target, const int t_len,
           const int band_tolerance, const int get_aln_str, Alignment* align,
@@ -175,7 +171,6 @@ int Align(const char* query, const int q_len, const char* target, const int t_le
     d_path_idx = 0;
     max_idx = 0;
 
-    foo<<<256, 256>>>();
     for (d = 0; d < max_d; ++d)
     {
         if (max_k - min_k > band_size) break;
