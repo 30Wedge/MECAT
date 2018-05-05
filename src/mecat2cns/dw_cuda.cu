@@ -1,4 +1,5 @@
 #include "dw.h"
+#include "cuda_help.h"
 
 namespace ns_banded_sw {
 
@@ -377,84 +378,179 @@ void dw_in_one_direction(const char* query, const int query_size, const char* ta
 }
 
 /*dw-CUDA functions */
-__global__
-void dw_left_merge(OutputStore* result, int* idx, int query_start, int target_start)
-{
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    int stride = blockDim.x * gridDim.x;
 
-    int i;
-    int j;
+//One-block function -- make sums twice as large as the thread count
+__global__
+void dw_left_merge(kernel_err_t* err, OutputStore* result, int* idx, int query_start, int target_start)
+{
+    extern __shared__ int sums[]; //collects i in lower third, j in mid third, and idx_m in upper
+
+    for(int i = 0; i < blockDim.x * 2; i+= blockDim.x)
+    {
+        sums[threadIdx.x] = 0;
+        sums[blockDim.x + threadIdx.x] = 0;
+    }
+
+    int tid = threadIdx.x;
+    int stride = blockIdx.x;
+
     int k;
-    int idx_m = tid;
+    int idx_m = tid + *idx;
     unsigned char ch;
 
-    for(k = result->left_store_size - 1 + tid, i = 0, j = 0; k >= 0; k -= stride, idx_m += stride)
+    for(k = result->left_store_size - 1 + tid; k >= 0; k -= stride, idx_m += blockDim.x)
     {
         ch = result->left_store1[k];
-        //assert 0 <= ch <=4
-        //ch = encode2char[ch];
+        kernel_r_assert(ch <= 4, err);
+        ch = ENCODE2CHAR[ch];
         result->out_store1[idx_m] = ch;
-        if (ch != '-') ++i; //do this like a GPU
+        if (ch != '-') sums[tid]++;
 
         ch = result->left_store2[k];
-        //assert 0 <= ch <=4
-        //ch = encode2char[ch];
+        kernel_r_assert( ch <= 4, err);
+        ch = ENCODE2CHAR[ch];
         result->out_store2[idx_m] = ch;
-        if( ch != '-') ++j;//do this like gpu
+        if( ch != '-') sums[blockDim.x + tid]++;
+    }
+    sums[blockDim.x*2 + tid] = idx_m;
+
+    {// sum i and j
+        __syncthreads();
+        int tmp;
+        for(int i = blockDim.x/2; i >0; i /=2)
+        {
+            if(threadIdx.x < i)
+            {
+                tmp = sums[threadIdx.x] + sums[threadIdx.x + i]; //reduce i
+                sums[threadIdx.x] = tmp;
+
+                tmp = sums[blockDim.x + threadIdx.x] + sums[blockDim.x + threadIdx.x + i]; //reduce j
+                sums[blockDim.x + threadIdx.x] = tmp;
+            }
+            __syncthreads();
+        }
     }
 
-    //reduce i and j here
+    {//reduce to find max idx_m
+        int tmp, tmp1;
+        for(int i = blockDim.x/2; i >0; i /=2)
+        {
+            if(threadIdx.x < i)
+            {
+                tmp = sums[2*blockDim.x + threadIdx.x];
+                tmp1 = sums[2*blockDim.x + threadIdx.x + i];
+                sums[2*blockDim.x + threadIdx.x] = tmp > tmp1 ? tmp : tmp1; //keep the max
+            }
+            __syncthreads();
+        }
+    }
 
     //output once
     if(threadIdx.x == 0 && blockIdx.x ==0)
     {
-        result->query_start =  query_start - i;
-        result->target_start = target_start - j;
+        result->query_start =  query_start - sums[0];
+        result->target_start = target_start - sums[blockDim.x];
+        *idx = sums[2*blockDim.x];
     }
-
-    //idx is persistent
-    //put the highest value of idx_m into idx
 }
 
+//One-block function -- make sums twice as large as the thread count
 __global__
-void dw_right_merge(OutputStore* result, int* idx, int query_start, int target_start)
+void dw_right_merge(kernel_err_t* err, OutputStore* result, int* idx, int query_start, int target_start)
 {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    int stride = blockDim.x * gridDim.x;
 
-    int i;
-    int j;
+    extern __shared__ int sums[]; //collects i in lower third, j in mid third, and idx_m in upper
+
+    for(int i = 0; i < blockDim.x * 2; i+= blockDim.x)
+        sums[threadIdx.x] = 0;
+
+    int tid = threadIdx.x;
+    int stride = blockDim.x;
+
     int k;
-    int idx_m = *idx + tid;
+    int idx_m = tid + *idx;
     unsigned char ch;
 
-    int ub = result->right_store_size; //upper bound
-    for(k = 0, i = 0, j = 0; k < ub; k += stride, idx_m += stride)
+    int ub = result->right_store_size;
+    for(k = tid; k < ub; k += stride, idx_m += stride)
     {
         ch = result->right_store1[k];
-        //assert 0 <= ch <=4
-        //ch = encode2char[ch];
+        kernel_r_assert(ch <= 4, err);
+        ch = ENCODE2CHAR[ch];
         result->out_store1[idx_m] = ch;
-        if (ch != '-') ++i; //do this like a GPU
+        if (ch != '-') sums[tid]++;
 
         ch = result->right_store2[k];
-        //assert 0 <= ch <=4
-        //ch = encode2char[ch];
+        kernel_r_assert(ch <= 4, err);
+        ch = ENCODE2CHAR[ch];
         result->out_store2[idx_m] = ch;
-        if( ch != '-') ++j;//do this like gpu
+        if( ch != '-') sums[blockDim.x + tid]++;
+    }
+    sums[tid] = idx_m;
+
+    {//sum i and j
+        int tmp;
+        __syncthreads();
+        for(int i = blockDim.x/2; i >0; i /=2)
+        {
+            if(threadIdx.x < i)
+            {
+                tmp = sums[threadIdx.x] + sums[threadIdx.x + i]; //reduce i
+                sums[threadIdx.x] = tmp;
+
+                tmp = sums[blockDim.x + threadIdx.x] + sums[blockDim.x + threadIdx.x + i]; //reduce j
+                sums[blockDim.x + threadIdx.x] = tmp;
+            }
+            __syncthreads();
+        }
     }
 
-    //reduce i and j here
+    {//reduce to find max idx_m
+        int tmp, tmp1;
+        for(int i = blockDim.x/2; i >0; i /=2)
+        {
+            if(threadIdx.x < i)
+            {
+                tmp = sums[2*blockDim.x + threadIdx.x];
+                tmp1 = sums[2*blockDim.x + threadIdx.x + i];
+                sums[2*blockDim.x + threadIdx.x] = tmp > tmp1 ? tmp : tmp1; //keep the max
+            }
+            __syncthreads();
+        }
+    }
 
     //output once
     if(threadIdx.x == 0 && blockIdx.x ==0)
     {
-        result->query_start =  query_start + i;
-        result->target_start = target_start + j;
+        result->query_end = query_start + sums[0];
+        result->target_end = target_start + sums[blockIdx.x];
+        *idx += sums[2*blockDim.x + threadIdx.x]; //TODO double check this is expected
+        result->out_store_size = *idx;
     }
-    //idx is persistent
-    //todo put the highest value of idx_m into idx
+}
+
+//all parameters _but_ right_merge and result_cpu need to be in gpu memory
+void dw_merge(OutputStore* result_cpu, OutputStore* result_gpu, int* idx, int query_start, int target_start, int right_merge)
+{
+    //create kernel_err_t
+    kernel_err_t* err;
+    kernel_err_init(&err);
+
+    if(! right_merge)
+    {
+        //highest multiple of 32 under 2048 that is not much bigger than store_size
+        int tn = 1 + 32 * (result_cpu->left_store_size /32);
+        tn = tn > 2048 ? 2048 : tn;
+        dw_left_merge<<<1,tn, tn*3>>>( err, result_gpu, idx, query_start, target_start);
+        kernel_err_check(err);
+    }
+    else
+    {
+        int tn = 1 + 32 * (result_cpu->right_store_size /32);
+        tn = tn > 2048 ? 2048 : tn;
+        dw_right_merge<<<1,tn, tn*3>>>( err, result_gpu, idx, query_start, target_start);
+        kernel_err_check(err);
+    }
 }
 
 __global__
@@ -463,51 +559,51 @@ void dw_pattern_build(OutputStore* result, int out_store_size)
 
     //divide block team into 4 groups
     //each group looks for a different type of thing
-    __shared__ int cnt; //count of the thing that htis block group is tracking
+    extern __shared__ int cnt[]; //count of the thing that htis block group is tracking
+    cnt[threadIdx.x] = 0;
 
-    int blockTeam = blockIdx.x % 4;
-    int tid = threadIdx.x + blockIdx.x * blockDim.x/4;
-    int stride = gridDim.x * blockDim.x/4;
+    int tid = threadIdx.x;
+    int stride = blockDim.x;
 
-    if( blockTeam == 0 ) //match
+    if( blockIdx.x == 0 ) //match
     {
         for(int j = tid; j < out_store_size; j += stride)
         {
             if(result->out_store1[j] == result->out_store2[j])
             {
-                ++cnt; //does this need to be atomically protected?
+                cnt[j]++;
                 result->out_match_pattern[j] = '|';
             }
 
         }
     }
-    else if( blockTeam == 1 ) //insert
+    else if( blockIdx.x == 1 ) //insert
     {
         //might need to check if its not a match
         for(int j = tid; j < out_store_size; j += stride)
         {
             if(result->out_store1[j] == '-')
             {
-                ++cnt; //does this need to be atomically protected?
+                cnt[j]++;
                 result->out_match_pattern[j] = '*';
             }
 
         }
     }
-    else if( blockTeam == 2 ) //delete
+    else if( blockIdx.x == 2 ) //delete
     {
         //might need to check if its not a match
         for(int j = tid; j < out_store_size; j += stride)
         {
             if(result->out_store2[j] == '-')
             {
-                ++cnt; //does this need to be atomically protected?
+                cnt[j]++;
                 result->out_match_pattern[j] = '*';
             }
 
         }
     }
-    else //mismatch
+    else if(blockIdx.x == 3)//mismatch
     {
         for(int j = tid; j < out_store_size; j += stride)
         {
@@ -515,26 +611,52 @@ void dw_pattern_build(OutputStore* result, int out_store_size)
                 result->out_store1[j] != '-' &&
                 result->out_store2[j] != '-')
             {
-                ++cnt; //does this need to be atomically protected?
+                cnt[j]++;
                 result->out_match_pattern[j] = '*';
             }
 
         }
     }
 
-    //reduce cnt into mis/mat/ins/del based on block group
-    int mis_f, mat_f, ins_f, del_f;
-
-    if(threadIdx.x == 0 and blockIdx.x == 0)
-    {
-        result->mat = mat_f;
-        result->mis = mis_f;
-        result->ins = ins_f;
-        result->del = del_f;
-        result->ident = 100.0 * mat_f / out_store_size;
+    {//reduce cnt into sum
+        __syncthreads();
+        int tmp;
+        for(int i = blockDim.x/2; i >0; i /=2)
+        {
+            if(threadIdx.x < i)
+            {
+                tmp = cnt[threadIdx.x] + cnt[threadIdx.x + i]; //reduce i
+                cnt[threadIdx.x] = tmp;
+            }
+            __syncthreads();
+        }
     }
 
-    //result structure is the output
+    //load results with output
+    if(threadIdx.x == 0)
+    {
+        if(blockIdx.x == 0)
+        {
+            result->mat = cnt[0];
+            result->ident = 100.0 * cnt[0]/ out_store_size;
+        }
+        else if(blockIdx.x == 1)
+            result->ins = cnt[0];
+        else if(blockIdx.x == 2)
+            result->del = cnt[0] ;
+        else if(blockIdx.x == 3)
+            result->mis = cnt[0];
+    }
+}
+
+//call pattern build kernel from CPU
+//result has to be on GPU
+void launch_pattern_build(OutputStore* result, int out_store_size)
+{
+    int tn = 1 + 32 * (out_store_size/32);
+    tn = tn > 2048 ? 2048 : tn;
+
+    dw_pattern_build<<<4,tn, tn>>>(result, out_store_size);
 }
 
 int  dw(const char* query, const int query_size, const int query_start,
@@ -545,6 +667,9 @@ int  dw(const char* query, const int query_size, const int query_start,
 {
     result->init();
     align->init();
+    kernel_err_t* err;
+    kernel_err_init(&err);
+
     // left extend
     dw_in_one_direction(query + query_start - 1, query_start,
 						target + target_start - 1, target_start,
@@ -559,18 +684,17 @@ int  dw(const char* query, const int query_size, const int query_start,
 
     // merge the results
     int i, j, k, idx = 0;
-    const char* encode2char = "ACGT-";
     for (k = result->left_store_size - 1, i = 0, j = 0; k > - 1; --k, ++idx)
     {
 		unsigned char ch = result->left_store1[k];
 		r_assert(ch >= 0 && ch <= 4);
-		ch = encode2char[ch];
+		ch = ENCODE2CHAR[ch];
 		result->out_store1[idx] = ch;
 		if (ch != '-') ++i;
 
 		ch = result->left_store2[k];
 		r_assert(ch >= 0 && ch <= 4);
-		ch = encode2char[ch];
+		ch = ENCODE2CHAR[ch];
 		result->out_store2[idx] = ch;
 		if (ch != '-')++j;
     }
@@ -581,26 +705,26 @@ int  dw(const char* query, const int query_size, const int query_start,
 	}
 	r_assert(result->query_start >= 0);
     result->target_start = target_start - j;
-	r_assert(result->target_start >= 0);
+	r_assert(result->target_start >= 0); //right merge
     for (k = 0, i = 0, j = 0; k < result->right_store_size; ++k, ++idx)
     {
 
 		unsigned char ch = result->right_store1[k];
 		r_assert(ch >= 0 && ch <= 4);
-		ch = encode2char[ch];
+		ch = ENCODE2CHAR[ch];
 		result->out_store1[idx] = ch;
 		if (ch != '-') ++i;
 
 		ch = result->right_store2[k];
 		r_assert(ch >= 0 && ch <= 4);
-		ch = encode2char[ch];
+		ch = ENCODE2CHAR[ch];
 		result->out_store2[idx] = ch;
 		if (ch != '-') ++j;
     }
     result->out_store_size = idx;
     result->query_end = query_start + i;
     result->target_end = target_start + j;
-
+    //pattern build
 	if (result->out_store_size >= min_aln_size)
     {
         int mat = 0, mis = 0, ins = 0, del = 0;
@@ -636,8 +760,10 @@ int  dw(const char* query, const int query_size, const int query_start,
         result->del = del;
         result->ident = 100.0 * mat / result->out_store_size;
 
+        cudaFreeHost(err);
         return 1;
     }
+    cudaFreeHost(err);
     return 0;
 }
 
