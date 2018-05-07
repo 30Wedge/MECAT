@@ -143,288 +143,265 @@ DPathData2* GetDPathIdx(const int d, const int k, const unsigned int max_idx, DP
     return ret;
 }
 
-__device__ int best_m_lock = 1;
+__device__ int best_m_lock = 0;
+__device__ int min_max_k_lock = 0;
+__device__ int new_min_k;
+__device__ int new_max_k;
 
-__device__ void max_sr(int* smem, int size) {
-    int i;
-    for (i = blockDim.x/2; i > 0; i >>= 1) {
-        if (threadIdx.x < i && threadIdx.x + i < size)
-            smem[threadIdx.x] = max(smem[threadIdx.x], smem[threadIdx.x + i]);
-        __syncthreads();
-    }
-    __syncthreads();
+template <typename T>
+__device__ T cuda_max(T l, T r) {
+    return (l < r)? r : l;
 }
 
-__device__ void aligned_sr(int* smem, int size) {
-    int i, temp;
-    for (i = blockDim.x/2; i > 0; i >>= 1) {
-        if (threadIdx.x < i && threadIdx.x + i < size)
-            temp = smem[threadIdx.x];
-            if (smem[threadIdx.x + i] >= 0 && temp < 0) {
-                temp = smem[threadIdx.x + i];
-            }
-            smem[threadIdx.x] = temp;
-        __syncthreads();
-    }
-    __syncthreads();
+template <typename T>
+__device__ T cuda_min(T l, T r) {
+    return (l < r)? l : r;
 }
 
-__global__ void align_kernal(
-    int* max_k,
-    int* min_k,
-    int* max_idx,
-    int* k_offset,
-    int* x,
-    int* y,
-    int* best_m,
-    int* aligned,
-    int* V,
-    int* U,
-    DPathData2* d_path,
-    const int right_extend,
-    const int q_len,
-    const int t_len,
-    const int smem_size,
-    int d,
-    char* query,
-    char* target) {
-
-    extern __shared__ int smem[];
-    int pre_k;
+__device__ void sr_max(int* data, int data_length, int* result) {
     int tid;
-    unsigned long d_path_idx;
 
-    d_path_idx = threadIdx.x + blockIdx.x * blockDim.x;
-    for (tid = d_path_idx * 2;
-        tid < *max_k && d_path_idx < 5000000; tid += blockDim.x * 2, d_path_idx += blockDim.x) {
-
-        if (tid == *min_k || (tid != *max_k && V[tid - 1 + *k_offset] < V[tid + 1 + *k_offset])) {
-            pre_k = tid + 1;
-            *x = V[tid + 1 + *k_offset] + 1;
-        } else {
-            pre_k = tid - 1;
-            *x = V[tid - 1 + *k_offset] + 1;
+    for (int i = data_length / 2; i > 0; i = i/2) {
+        for (tid = threadIdx.x + blockIdx.x * blockDim.x; tid < i; tid += gridDim.x * blockDim.x) {
+            int temp = (data[tid] > data[tid + i])? data[tid] : data[tid + i];
+            data[tid] = temp;
         }
-
-        *y = *x - tid;
-        d_path[d_path_idx].d = d;
-        d_path[d_path_idx].k = tid;
-        d_path[d_path_idx].x1 = *x;
-        d_path[d_path_idx].y1 = *y;
-
-        if (right_extend)
-            while (*x < q_len && *y < t_len && query[*x] == target[*y]) {++(*x); ++(*y);}
-        else
-            while (*x < q_len && *y < t_len && query[-(*x)] == target[-(*y)]) {++(*x); ++(*y);}
-
-        d_path[d_path_idx].x2 = *x;
-        d_path[d_path_idx].y2 = *y;
-        d_path[d_path_idx].pre_k = pre_k;
-
-        V[tid + *k_offset] = *x;
-        U[tid + *k_offset] = *x + *y;
-        smem[threadIdx.x] = *x + *y;
         __syncthreads();
-
-        max_sr(smem, smem_size);
-
-        while(atomicExch(&best_m_lock, 0));
-        *best_m = max(*best_m, smem[0]);
-        atomicExch(&best_m_lock, 1);
-
-        // If any thread reaches completion then we need to break out.
-        if (*x >= q_len || *y >= t_len) {
-            smem[threadIdx.x] = threadIdx.x;
-        } else {
-            smem[threadIdx.x] = 0;
-        }
-
-        __syncthreads();
-        aligned_sr(smem, smem_size);
-        if (smem[0] >= 0) {
-            if (threadIdx.x == smem[0]) {
-                *aligned = 1;
-                *max_idx = d_path_idx;  // Copy over the correct id_path
-            }
-            break;  // break back to CPU if aligned
-        }
     }
+
+    *result = data[0]
 }
 
+__global__ void align_kernel(DPathData2* d_path, int max_d, int* V) {
+        int min_k = 0;
+        int pre_k = 0;
+        int d_path_idx;
 
-int Align(const char* query, const int q_len, const char* target, const int t_len, 
-                const int band_tolerance, const int get_aln_str, Alignment* align, 
-                int* V, int* U, DPathData2* d_path, PathPoint* aln_path, 
-                const int right_extend, double error_rate, int u_size, int v_size)
-{
-        int k_offset;
-        int  d;
-        int  k, k2;
-        int best_m;
-        int min_k, new_min_k, max_k, new_max_k, pre_k;
-        int x, y;
-        int ck, cd, cx, cy, nx, ny; 
-        int max_d, band_size;
-        unsigned long d_path_idx = 0, max_idx = 0;
-        int aln_path_idx, aln_pos, i, aligned = 0;
-        DPathData2* d_path_aux;
+        for (int d = 0; d < max_d; ++d) {
+            if (max_k - min_k > band_size) break;  // I think this is checking to see if we the two
+                                                   // strings don't align at all
+            // Multiply by 2 to only do work on evens
 
-        max_d = (int)(2.0 * error_rate * (q_len + t_len));
-        k_offset = max_d;
-        band_size = band_tolerance * 2;
-        align->init();
-        best_m = -1;
-        min_k = 0;
-        max_k = 0;
-        d_path_idx = 0;
-        max_idx = 0;
+            d_path_idx = threadIdx.x + blockIdx.x * blockDim.x;
+            for (int tid = d_path_idx * 2;
+                tid < max_k; tid += blockDim.x * 2, d_path_idx += blockDim.x) {
+                if (tid == min_k || (tid != max_k && V[tid - 1 + k_offset] < V[k + 1 + k_offset])) {
+                    pre_k = tid + 1;
+                    x = V[tid + 1 + k_offset] + 1;
+                } else {
+                    pre_k = tid - 1;
+                    x = V[tid - 1 + k_offset] + 1;
+                }
 
-        int* vars_d = NULL;
-        int *U_d, *V_d;
-        char *query_d, *target_d;
-        DPathData2* d_path_d;
+                y = x - tid;
+                d_path[d_path_idx].d = d;
+                d_path[d_path_idx].k = tid;
+                d_path[d_path_idx].x1 = x;
+                d_path[d_path_idx].y1 = y;
 
-        cudaMalloc((void**)&vars_d, sizeof(int) * 8);
-        cudaMalloc((void**)&U_d, sizeof(int) * u_size);
-        cudaMalloc((void**)&V_d, sizeof(int) * v_size);
-        cudaMalloc((void**)&d_path_d, sizeof(DPathData2) * 5000000);
-        cudaMalloc((void**)&query_d, sizeof(char) * q_len);
-        cudaMalloc((void**)&target_d, sizeof(char) * t_len);
-        cudaMemcpy(target_d, target, sizeof(char) * t_len, cudaMemcpyHostToDevice);
-        cudaMemcpy(query_d, query, sizeof(char) * q_len, cudaMemcpyHostToDevice);
+                if (right_extend)
+                    while(x < q_len && y < t_len && query[x] == target[y]) {++x; ++y;}
+                else
+                    while(x < q_len && y < t_len && query[-x] == target[-y]) {++x; ++y;}
 
-        for (d = 0; d < max_d; ++d)
-        {
-            cudaMemcpy(vars_d, &max_k, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 1, &min_k, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 2, &max_idx, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 3, &k_offset, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 4, &x, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 5, &y, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 6, &best_m, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(vars_d + 7, &aligned, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(U_d, U, sizeof(int) * u_size, cudaMemcpyHostToDevice);
-            cudaMemcpy(V_d, V, sizeof(int) * v_size, cudaMemcpyHostToDevice);
+                d_path[d_path_idx].x2 = x;
+                d_path[d_path_idx].y2 = y;
+                d_path[d_path_idx].pre_k = pre_k;
+                
+                // I'm a bit concerned by this block. Need to confirm if it is atomic
+                // This is the lazy approach. Better would be to make a temp array a run SR on it
+                while(atomicExch(&best_m_lock, 1));
+                V[tid + k_offset] = x;
+                U[tid + k_offset] = x + y;
+                best_m = cuda_max(best_m, x + y);
+                atomicExch(&best_m_lock, 0);
 
-            for (int j = 0; j < 5000000; ++j) {
-                cudaMemcpy(d_path_d, d_path, sizeof(DPathData2), cudaMemcpyHostToDevice);
+                // Also a bit suspect
+                if (x >= q_len || y >= t_len) {
+                    aligned = 1;
+                    max_idx = d_path_idx; break;
+                }
             }
+            __syncthreads();  // Make sure the ducks are in a row
 
-            align_kernal<<<256, 256, 256>>>(vars_d, vars_d + 1, vars_d + 2,
-                vars_d + 3, vars_d + 4, vars_d + 5, vars_d + 6, vars_d + 7, V_d, U_d,
-                d_path_d, right_extend, q_len, t_len, 255, d, query_d, target_d);
-
-            cudaMemcpy(&max_k, vars_d, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&min_k, vars_d + 1, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&max_idx, vars_d + 2, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&k_offset, vars_d + 3, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&x, vars_d + 4, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&y, vars_d + 5, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&best_m, vars_d + 6, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&aligned, vars_d + 7, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(U, U_d, sizeof(int) * u_size, cudaMemcpyDeviceToHost);
-            cudaMemcpy(V, V_d, sizeof(int) * v_size, cudaMemcpyDeviceToHost);
-
-            for (int j = 0; j < 5000000; ++j) {
-                cudaMemcpy(d_path, d_path_d, sizeof(DPathData2), cudaMemcpyDeviceToHost);
-            }
-            // for banding
             new_min_k = max_k;
             new_max_k = min_k;
-            for (k2 = min_k; k2 <= max_k; k2 += 2)
-                if (U[k2 + k_offset] >= best_m - band_tolerance)
-                { new_min_k = std::min(new_min_k, k2); new_max_k = std::max(new_max_k, k2); }
+            for (int tid = threadIdx.x * 2 + min_k; tid <= max_k; tid += blockDim.x * 2)
+                if (U[k2 + k_offset] >= best_m - band_tolerance) {
+                    while(atomicExch(&min_max_k_lock, 1));
+                    new_min_k = cuda_min(new_min_k, tid);
+                    new_max_k = cuda_max(new_max_k, tid);
+                    atomicExch(&min_max_k_lock, 0);
+                }
             max_k = new_max_k + 1;
             min_k = new_min_k - 1;
 
-            if (aligned)
-            {
-                align->aln_q_e = x;
-                align->aln_t_e = y;
-                align->dist = d;
-                align->aln_str_size = (x + y + d) / 2;
-                align->aln_q_s = 0;
-                align->aln_t_s = 0;
+            __syncthreads();
 
-                if (get_aln_str)
-                {
-                    cd = d;
-                    ck = k;
-                    aln_path_idx = 0;
-                    while (cd >= 0 && aln_path_idx < q_len + t_len + 1)
-                    {
-                        d_path_aux = GetDPathIdx(cd, ck, max_idx, d_path);
-                        aln_path[aln_path_idx].x = d_path_aux->x2;
-                        aln_path[aln_path_idx].y = d_path_aux->y2;
-                        ++aln_path_idx;
-                        aln_path[aln_path_idx].x = d_path_aux->x1;
-                        aln_path[aln_path_idx].y = d_path_aux->y1;
-                        ++aln_path_idx;
-                        ck = d_path_aux->pre_k;
-                        cd -= 1;
-                    }
-                    --aln_path_idx;
-                    cx = aln_path[aln_path_idx].x;
-                    cy = aln_path[aln_path_idx].y;
-                    align->aln_q_s = cx;
-                    align->aln_t_s = cy;
-                    aln_pos = 0;
-                    while (aln_path_idx > 0)
-                    {
-                        --aln_path_idx;
-                        nx = aln_path[aln_path_idx].x;
-                        ny = aln_path[aln_path_idx].y;
-                        if (cx == nx && cy == ny) continue;
-                        if (cx == nx && cy != ny)
-                        {
-	    					if (right_extend)
-		    				{
-			    				for (i = 0; i < ny - cy; ++i) align->q_aln_str[aln_pos + i] = GAP_ALN;
-				    			for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[cy + i];
-					    	}
-						    else
-    						{
-	    						for (i = 0; i < ny - cy; ++i) align->q_aln_str[aln_pos + i] = GAP_ALN;
-		    					for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[-(cy + i)];
-			    			}
-                            aln_pos += ny - cy;
-                        }
-                        else if (cx != nx && cy == ny)
-                        {
-			    			if (right_extend)
-				    		{
-					    		for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[cx + i];
-						    	for (i = 0; i < nx - cx; ++i) align->t_aln_str[aln_pos + i] = GAP_ALN;
-    						}
-	    					else
-		    				{
-			    				for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[-(cx + i)];
-				    			for (i = 0; i < nx - cx; ++i) align->t_aln_str[aln_pos + i] = GAP_ALN;
-					    	}
-                            aln_pos += nx - cx;
-                        }
-                        else
-                        {
-			    			if (right_extend)
-				    		{
-					    		for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[cx + i];
-						    	for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[cy + i];
-    						}
-	    					else
-		    				{
-			    				for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[-(cx + i)];
-				    			for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[-(cy + i)];
-					    	}
-                            aln_pos += ny - cy;
-                        }
-                        cx = nx;
-                        cy = ny;
-                    }
-                    align->aln_str_size = aln_pos;
-                }
-                break;
-            }
+        return;
+}
+
+// Look into mink as bounds
+
+int Align(const char* query, const int q_len, const char* target, const int t_len, 
+          const int band_tolerance, const int get_aln_str, Alignment* align, 
+		  int* V, int* U, DPathData2* d_path, PathPoint* aln_path, 
+		  const int right_extend, double error_rate)
+{
+    int k_offset;
+    int  d;
+    int  k, k2;
+    int best_m;
+    int min_k, new_min_k, max_k, new_max_k, pre_k;
+    int x, y;
+    int ck, cd, cx, cy, nx, ny; 
+    int max_d, band_size;
+    unsigned long d_path_idx = 0, max_idx = 0;
+    int aln_path_idx, aln_pos, i, aligned = 0;
+    DPathData2* d_path_aux;
+    
+    align_kernel<<<256,256>>>();
+
+    max_d = (int)(2.0 * error_rate * (q_len + t_len));
+    k_offset = max_d;
+    band_size = band_tolerance * 2;
+    align->init();
+    best_m = -1;
+    min_k = 0;
+    max_k = 0;
+    d_path_idx = 0;
+    max_idx = 0;
+    
+    for (d = 0; d < max_d; ++d)
+    {
+        if (max_k - min_k > band_size) break;
+
+        for (k = min_k; k <= max_k; k += 2)
+        {
+            if( k == min_k || (k != max_k && V[k - 1 + k_offset] < V[k + 1 + k_offset]) )
+            { pre_k = k + 1; x = V[k + 1 + k_offset]; }
+            else 
+            { pre_k = k - 1; x = V[k - 1 + k_offset] + 1; }
+            y = x - k;
+            d_path[d_path_idx].d = d;
+            d_path[d_path_idx].k = k;
+            d_path[d_path_idx].x1 = x;
+            d_path[d_path_idx].y1 = y;
+			
+			if (right_extend)
+				while( x < q_len && y < t_len && query[x] == target[y]) { ++x; ++y; }
+			else
+				while( x < q_len && y < t_len && query[-x] == target[-y]) { ++x; ++y; }
+
+            d_path[d_path_idx].x2 = x;
+            d_path[d_path_idx].y2 = y;
+            d_path[d_path_idx].pre_k = pre_k;
+            ++d_path_idx;
+
+            V[k + k_offset] = x;
+            U[k + k_offset] = x + y;
+            best_m = std::max(best_m, x + y);
+            if (x >= q_len || y >= t_len)
+            { aligned = 1; max_idx = d_path_idx; break; }
         }
+
+        // for banding
+        new_min_k = max_k;
+        new_max_k = min_k;
+        for (k2 = min_k; k2 <= max_k; k2 += 2)
+            if (U[k2 + k_offset] >= best_m - band_tolerance)
+            { new_min_k = std::min(new_min_k, k2); new_max_k = std::max(new_max_k, k2); }
+        max_k = new_max_k + 1;
+        min_k = new_min_k - 1;
+
+        if (aligned)
+        {
+            align->aln_q_e = x;
+            align->aln_t_e = y;
+            align->dist = d;
+            align->aln_str_size = (x + y + d) / 2;
+            align->aln_q_s = 0;
+            align->aln_t_s = 0;
+
+            if (get_aln_str)
+            {
+                cd = d;
+                ck = k;
+                aln_path_idx = 0;
+                while (cd >= 0 && aln_path_idx < q_len + t_len + 1)
+                {
+                    d_path_aux = GetDPathIdx(cd, ck, max_idx, d_path);
+                    aln_path[aln_path_idx].x = d_path_aux->x2;
+                    aln_path[aln_path_idx].y = d_path_aux->y2;
+                    ++aln_path_idx;
+                    aln_path[aln_path_idx].x = d_path_aux->x1;
+                    aln_path[aln_path_idx].y = d_path_aux->y1;
+                    ++aln_path_idx;
+                    ck = d_path_aux->pre_k;
+                    cd -= 1;
+                }
+                --aln_path_idx;
+                cx = aln_path[aln_path_idx].x;
+                cy = aln_path[aln_path_idx].y;
+                align->aln_q_s = cx;
+                align->aln_t_s = cy;
+                aln_pos = 0;
+                while (aln_path_idx > 0)
+                {
+                    --aln_path_idx;
+                    nx = aln_path[aln_path_idx].x;
+                    ny = aln_path[aln_path_idx].y;
+                    if (cx == nx && cy == ny) continue;
+                    if (cx == nx && cy != ny)
+                    {
+						if (right_extend)
+						{
+							for (i = 0; i < ny - cy; ++i) align->q_aln_str[aln_pos + i] = GAP_ALN;
+							for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[cy + i];
+						}
+						else
+						{
+							for (i = 0; i < ny - cy; ++i) align->q_aln_str[aln_pos + i] = GAP_ALN;
+							for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[-(cy + i)];
+						}
+                        aln_pos += ny - cy;
+                    }
+                    else if (cx != nx && cy == ny)
+                    {
+						if (right_extend)
+						{
+							for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[cx + i];
+							for (i = 0; i < nx - cx; ++i) align->t_aln_str[aln_pos + i] = GAP_ALN;
+						}
+						else
+						{
+							for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[-(cx + i)];
+							for (i = 0; i < nx - cx; ++i) align->t_aln_str[aln_pos + i] = GAP_ALN;
+						}
+                        aln_pos += nx - cx;
+                    }
+                    else
+                    {
+						if (right_extend)
+						{
+							for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[cx + i];
+							for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[cy + i];
+						}
+						else
+						{
+							for (i = 0; i < nx - cx; ++i) align->q_aln_str[aln_pos + i] = query[-(cx + i)];
+							for (i = 0; i < ny - cy; ++i) align->t_aln_str[aln_pos + i] = target[-(cy + i)];
+						}
+                        aln_pos += ny - cy;
+                    }
+                    cx = nx;
+                    cy = ny;
+                }
+                align->aln_str_size = aln_pos;
+            }
+            break;
+        }
+    }
     if (align->aln_q_e == q_len || align->aln_t_e == t_len) return 1;
     else return 0;
 }
@@ -454,7 +431,7 @@ void dw_in_one_direction(const char* query, const int query_size, const char* ta
         memset(V, 0, sizeof(int) * V_SIZE);
         if (right_extend) { seq1 = query + extend1; seq2 = target + extend2; }
         else { seq1 = query - extend1; seq2 = target - extend2; }
-        align_flag = Align(seq1, seg_size, seq2, seg_size, 0.3 * seg_size, 400, align, U, V, d_path, aln_path, right_extend, error_rate, U_SIZE, V_SIZE);
+        align_flag = Align(seq1, seg_size, seq2, seg_size, 0.3 * seg_size, 400, align, U, V, d_path, aln_path, right_extend, error_rate);
         if (align_flag)
         {
             for (k = align->aln_str_size - 1, i = 0, j = 0, num_matches = 0; k > -1 && num_matches < 4; --k)
